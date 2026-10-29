@@ -514,7 +514,7 @@ initMapPolling();
    LOAD NODES
    ====================================================== */
 
-fetch('/api/nodes?days_active=3')
+fetch('/api/nodes?days_active=1')
     .then(r=>r.json())
     .then(async data=>{
         await waitForConfig();
