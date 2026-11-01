@@ -91,6 +91,12 @@
 
 <!-- SEARCH + FILTER -->
 <div class="search-container">
+    <label style="color:#333;">Days active:</label>
+    <select id="days-active-filter">
+      {% for day in range(1, 15) %}
+      <option value="{{ day }}" {% if day == 3 %}selected{% endif %}>{{ day }}</option>
+      {% endfor %}
+    </select>
     <label style="color:#333;">Channel:</label>
     <select id="channel-select" onchange="filterByChannel()"></select>
 
@@ -179,10 +185,14 @@ let selectedChannel = null;
 // -----------------------------------
 // LOAD NODES + EDGES FROM API
 // -----------------------------------
-async function loadData() {
+let nodesRequestId = 0;
+
+async function loadData(daysActive) {
+    const reqId = ++nodesRequestId;
 
     // 1. Load nodes
-    const n = await fetch("/api/nodes").then(r => r.json());
+    const n = await fetch(`/api/nodes?days_active=${encodeURIComponent(daysActive)}`).then(r => r.json());
+    if (reqId !== nodesRequestId) return;
     nodes = n.nodes.map(x => ({
         name: String(x.node_id),
         node_id: x.node_id,
@@ -210,7 +220,7 @@ async function loadData() {
 
     // 2. Load edges
     const e = await fetch("/api/edges").then(r => r.json());
-
+    if (reqId !== nodesRequestId) return;
     // Only keep edges that reference valid nodes
     edges = e.edges
         .filter(ed =>
@@ -254,16 +264,19 @@ async function loadData() {
 // -----------------------------------
 function populateChannelDropdown() {
     const sel = document.getElementById("channel-select");
+    const previous = selectedChannel;
     const chans = [...new Set(nodes.map(n => n.channel))].sort();
 
+    sel.innerHTML = "";
     chans.forEach(ch => {
-        const opt = document.createElement("option");
-        opt.value = ch;
-        opt.text = ch;
-        sel.appendChild(opt);
+      const opt = document.createElement("option");
+      opt.value = ch;
+      opt.text = ch;
+      sel.appendChild(opt);
     });
 
-    selectedChannel = chans[0];
+    // keep the current channel if it still exists in this window
+    selectedChannel = chans.includes(previous) ? previous : (chans[0] ?? "");
     sel.value = selectedChannel;
 
     filterByChannel();
@@ -378,7 +391,11 @@ function searchNode() {
 }
 
 // -----------------------------------
-loadData();
+const daysActiveFilter = document.getElementById("days-active-filter");
+daysActiveFilter.addEventListener("change", () => {
+  loadData(daysActiveFilter.value).catch(console.error);
+});
+loadData(daysActiveFilter.value).catch(console.error);
 window.addEventListener("resize", () => chart.resize());
 </script>
 
