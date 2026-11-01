@@ -74,7 +74,7 @@
     #map-wrapper {
         position: relative;
         width: 100%;
-        height: calc(100vh - 270px);
+        height: calc(100vh - 310px);   /* was 270px */
     }
     #map {
         width: 100%;
@@ -117,11 +117,30 @@
     #unmapped-list li:last-child { border-bottom: none; }
     .unmapped-node { font-weight: 400; color: #000; }
     .unmapped-empty { color: #666; font-style: italic; }
+    .days-active-bar {
+      text-align: center;
+      margin: 8px 0;
+      font-size: 14px;
+    }
+    .days-active-bar select {
+      padding: 3px 6px;
+      min-width: 60px;
+    }
 </style>
 </style>
 {% endblock %}
 
 {% block body %}
+
+<div class="days-active-bar">
+  <span>Showing nodes active in the last</span>
+  <select id="days-active-filter" aria-label="Days active">
+    {% for day in range(1, 15) %}
+    <option value="{{ day }}" {% if day == 3 %}selected{% endif %}>{{ day }}</option>
+    {% endfor %}
+  </select>
+  <span>days.</span>
+</div>
 
 <div id="map-wrapper">
     <div id="map"></div>
@@ -514,41 +533,60 @@ initMapPolling();
    LOAD NODES
    ====================================================== */
 
-fetch('/api/nodes?days_active=1')
-    .then(r=>r.json())
-    .then(async data=>{
-        await waitForConfig();
-        if(!data.nodes) return;
+let nodesRequestId = 0;
 
-        nodes = data.nodes.map(n=>({
-            key: n.node_id ?? n.id,
-            id: n.id,
-            node_id: n.node_id,
-            lat: n.last_lat ? n.last_lat/1e7 : null,
-            long: n.last_long ? n.last_long/1e7 : null,
-            long_name: n.long_name || "",
-            short_name: n.short_name || "",
-            channel: n.channel || "",
-            hw_model: n.hw_model || "",
-            role: n.role || "",
-            firmware: n.firmware || "",
-            last_seen_us: n.last_seen_us || null,
-            is_mqtt_gateway: n.is_mqtt_gateway === true,
-            isRouter: (n.role||"").toLowerCase().includes("router")
-        }));
+async function loadNodes(daysActive){
+  const reqId = ++nodesRequestId;
+  const res = await fetch(`/api/nodes?days_active=${encodeURIComponent(daysActive)}`);
+  const data = await res.json();
+  await waitForConfig();
+  if(reqId !== nodesRequestId || !data.nodes) return;   // ignore stale responses
 
-        nodes.forEach(n=>{
-            nodeMap.set(n.key, n);
-            if(n.channel) channelSet.add(n.channel);
-        });
+  // Clear state from the previous load
+  clearActiveBlinks();
+  nodeLayer.clearLayers();
+  edgeLayer.clearLayers();
+  selectedNodeId = null;
+  markerById = {};
+  nodeMap.clear();
+  channelSet.clear();
+  trafficHeatLoaded = false;
+  trafficHeatLayer.setLatLngs([]);
 
-        renderNodesOnMap();
-        createChannelFilters();
-        if(map.hasLayer(trafficHeatLayer)){
-            loadTrafficHeat();
-        }
-    })
-    .catch(console.error);
+  nodes = data.nodes.map(n=>({
+    key: n.node_id ?? n.id,
+    id: n.id,
+    node_id: n.node_id,
+    lat: n.last_lat ? n.last_lat/1e7 : null,
+    long: n.last_long ? n.last_long/1e7 : null,
+    long_name: n.long_name || "",
+    short_name: n.short_name || "",
+    channel: n.channel || "",
+    hw_model: n.hw_model || "",
+    role: n.role || "",
+    firmware: n.firmware || "",
+    last_seen_us: n.last_seen_us || null,
+    is_mqtt_gateway: n.is_mqtt_gateway === true,
+    isRouter: (n.role||"").toLowerCase().includes("router")
+  }));
+
+  nodes.forEach(n=>{
+    nodeMap.set(n.key, n);
+    if(n.channel) channelSet.add(n.channel);
+  });
+
+  renderNodesOnMap();
+  createChannelFilters();
+  if(map.hasLayer(trafficHeatLayer)) loadTrafficHeat();
+}
+
+const daysActiveFilter = document.getElementById("days-active-filter");
+const urlDays = parseInt(new URLSearchParams(window.location.search).get("days"), 10);
+if(urlDays >= 1 && urlDays <= 14) daysActiveFilter.value = String(urlDays);
+daysActiveFilter.addEventListener("change", () => {
+  loadNodes(daysActiveFilter.value).catch(console.error);
+});
+loadNodes(daysActiveFilter.value).catch(console.error);
 
 /* ======================================================
    RENDER NODES
@@ -963,43 +1001,49 @@ function blinkNode(marker,longName,portnum,payload){
    ====================================================== */
 
 function createChannelFilters(){
-    const filterContainer = document.getElementById("filter-container");
-    const saved = JSON.parse(localStorage.getItem("mapFilters") || "{}");
+  const filterContainer = document.getElementById("filter-container");
+  const saved = JSON.parse(localStorage.getItem("mapFilters") || "{}");
 
-    [...channelSet].sort((a, b) => a.localeCompare(b)).forEach(channel=>{
-        const cb=document.createElement("input");
-        cb.type="checkbox";
-        cb.className="filter-checkbox";
-        cb.id=`filter-channel-${channel}`;
-        cb.checked = saved[channel] !== false;
+  // remove channel checkboxes/labels from the previous load
+  filterContainer.querySelectorAll(".channel-dyn").forEach(el => el.remove());
 
-        cb.addEventListener("change", saveFiltersToLocalStorage);
-        cb.addEventListener("change", updateNodeVisibility);
+  [...channelSet].sort((a, b) => a.localeCompare(b)).forEach(channel=>{
+    const cb=document.createElement("input");
+    cb.type="checkbox";
+    cb.className="filter-checkbox channel-dyn";
+    cb.id=`filter-channel-${channel}`;
+    cb.checked = saved[channel] !== false;
+    cb.addEventListener("change", saveFiltersToLocalStorage);
+    cb.addEventListener("change", updateNodeVisibility);
+    filterContainer.appendChild(cb);
 
-        filterContainer.appendChild(cb);
+    const label=document.createElement("label");
+    label.className = "channel-dyn";
+    label.htmlFor=cb.id;
+    label.innerText=channel;
+    label.style.color = hashToColor(channel);
+    filterContainer.appendChild(label);
+  });
 
-        const label=document.createElement("label");
-        label.htmlFor=cb.id;
-        label.innerText=channel;
-        label.style.color = hashToColor(channel);
-        filterContainer.appendChild(label);
-    });
+  const routerOnly=document.getElementById("filter-routers-only");
+  const mqttOnly=document.getElementById("filter-mqtt-only");
 
-    const routerOnly=document.getElementById("filter-routers-only");
-    const mqttOnly=document.getElementById("filter-mqtt-only");
-    routerOnly.checked = saved["routersOnly"] || false;
-    mqttOnly.checked = saved["mqttOnly"] || false;
+  routerOnly.checked = saved["routersOnly"] || false;
+  mqttOnly.checked = saved["mqttOnly"] || false;
 
+  if(!routerOnly.dataset.bound){
+    routerOnly.dataset.bound = "1";
     routerOnly.addEventListener("change", saveFiltersToLocalStorage);
     routerOnly.addEventListener("change", updateNodeVisibility);
     mqttOnly.addEventListener("change", saveFiltersToLocalStorage);
     mqttOnly.addEventListener("change", updateNodeVisibility);
+  }
 
-    updateNodeVisibility();
+  updateNodeVisibility();
 }
 
 function saveFiltersToLocalStorage(){
-    const state = {};
+    const state = JSON.parse(localStorage.getItem("mapFilters") || "{}");
     channelSet.forEach(ch=>{
         state[ch] = document.getElementById(`filter-channel-${ch}`).checked;
     });
@@ -1042,7 +1086,7 @@ function updateNodeVisibility(){
 
 function shareCurrentView() {
     const c = map.getCenter();
-    const url = `${window.location.origin}/map?lat=${c.lat.toFixed(6)}&lng=${c.lng.toFixed(6)}&zoom=${map.getZoom()}`;
+    const url = `${window.location.origin}/map?lat=${c.lat.toFixed(6)}&lng=${c.lng.toFixed(6)}&zoom=${map.getZoom()}&days=${document.getElementById("days-active-filter").value}`;
 
     navigator.clipboard.writeText(url).then(()=>{
         const btn = document.getElementById('share-button');
@@ -1065,6 +1109,11 @@ function resetFiltersToDefaults(){
     });
     saveFiltersToLocalStorage();
     updateNodeVisibility();
+    const daysSel = document.getElementById("days-active-filter");
+    if(daysSel.value !== "1"){
+      daysSel.value = "1";
+      loadNodes("1").catch(console.error);
+    }
 }
 
 /* ======================================================
